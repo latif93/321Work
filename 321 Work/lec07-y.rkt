@@ -1,0 +1,63 @@
+#lang plai
+
+(let ([mk-rec
+       (lambda (almost-fac)
+         (let ([not-fac
+                (lambda (not-fac)
+                  (let ([fac (lambda (n) ((not-fac not-fac) n))])
+                    (almost-fac fac)))])
+           (not-fac not-fac)))])
+  (let ([fac
+         (mk-rec (lambda (fac)
+                   (lambda (n)
+                     (if (zero? n)
+                         1
+                         (* n (fac (- n 1)))))))])
+    (fac 6)))
+
+
+(let ([mk-rec
+       (lambda (almost-fac)
+         (let ([not-fac
+                (lambda (not-fac)
+                  (let ([fac (lambda (n) ((not-fac not-fac) n))])
+                    (almost-fac fac)))])
+           (not-fac not-fac)))])
+  (let ([fib (mk-rec (lambda (fib)
+                       (lambda (n)
+                         (cond [(= n 0) 1]
+                               [(= n 1) 1]
+                               [else (+ (fib (- n 1))
+
+                                        (fib (- n 2)))]))))])
+    (fib 5)))
+
+
+(let ([mk-rec
+       (lambda (almost-fac)
+         (let ([not-fac
+                (lambda (not-fac)
+                  (let ([fac (lambda (n) ((not-fac not-fac) n))])
+                    (almost-fac fac)))])
+           (not-fac not-fac)))])
+  (let ([sum (mk-rec (lambda (sum)
+                       (lambda (lon)
+                         (cond [(empty? lon) 0]
+                               [else (+ (first lon)
+                                        (sum (rest lon)))]))))])
+    (sum '(1 2 3 4 5))))
+(ncompile(nparse`{with {mk-rec
+                  {fun {almost-fac}
+                       {with {not-fac
+                              {fun {not-fac}
+                              {with {fac {fun {n} {{not-fac not-fac} n}}}
+                                        {almost-fac fac}}}}
+                             {not-fac not-fac}}}}
+           {with {fac
+                  {mk-rec {fun {fac}
+                   {fun {n}
+                        {if0 n
+                             1
+                             {+ 1 {fac {- n 1}}}}}}}}
+                 {fac 0}}
+                 }))

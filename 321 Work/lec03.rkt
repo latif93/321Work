@@ -1,0 +1,278 @@
+#lang plai
+
+;(print-only-errors)
+
+(define-type F1WAE
+  [num (n number?)]
+  [add (lhs F1WAE?)
+       (rhs F1WAE?)]
+  [sub (lhs F1WAE?)
+       (rhs F1WAE?)]
+  [with (name symbol?)
+        (bound-expr F1WAE?)
+        (body-expr F1WAE?)]
+  [id (name symbol?)]
+  [app (fun-name symbol?)
+       (arg-expr F1WAE?)])
+
+(define-type FunDef
+  [fundef (fun-name symbol?)
+          (param-name symbol?)
+          (body F1WAE?)])
+
+#|
+<FunDef> ::= {deffun {<id> <id>} <F1WAE>}
+<F1WAE> ::= <num>
+         | {+ <F1WAE> <F1WAE>}
+         | {- <F1WAE> <F1WAE>}
+         | {with {<id> <F1WAE>} <F1WAE>}
+         | <id>
+         | {<id> <F1WAE>}
+|#
+
+;; parse : s-expression -> F1WAE?
+(define (parse s-exp)
+  (cond [(number? s-exp)
+         (num s-exp)]
+        [(symbol? s-exp)
+         (id s-exp)]
+        [(list? s-exp)
+         (when (empty? s-exp)
+           (error 'parse "expected an F1WAE, got an empty list"))
+         (cond [(equal? (first s-exp) '+)
+                (check-pieces s-exp 3 "addition")
+                (add (parse (second s-exp))
+                     (parse (third s-exp)))]
+               [(equal? (first s-exp) '-)
+                (check-pieces s-exp 3 "substraction")
+                (sub (parse (second s-exp))
+                     (parse (third s-exp)))]
+               [(equal? (first s-exp) 'with)
+                (check-pieces s-exp 3 "with")
+                (check-pieces (second s-exp) 2 "with binding pair")
+                (unless (symbol? (first (second s-exp)))
+                  (error 'parse "expected name, got ~a" (first (second s-exp))))
+                (with (first (second s-exp))
+                      (parse (second (second s-exp)))
+                      (parse (third s-exp)))]
+               [(symbol? (first s-exp))
+                (check-pieces s-exp 2 "application")
+                (app (first s-exp)
+                     (parse (second s-exp)))]
+               [else
+                (error 'parse "expected a F1WAE, got: ~a" s-exp)])]
+        [else
+         (error 'parse "expected a F1WAE, got: ~a" s-exp)]))
+
+(define (check-pieces s-exp n expected)
+  (unless (list? s-exp)
+    (error 'parse "expected ~a, got ~a" expected s-exp))
+  (unless (equal? (length s-exp) n)
+    (error 'parse "expected ~a, got ~a" expected s-exp)))
+
+(test (parse `1)
+      (num 1))
+(test (parse `x)
+      (id 'x))
+(test (parse `{+ 1 2})
+      (add (num 1) (num 2)))
+(test (parse `{- 1 2})
+      (sub (num 1) (num 2)))
+(test (parse `{+ 1 {+ 2 3}})
+      (add (num 1) (add (num 2) (num 3))))
+(test (parse `{with {x 3} {+ x 2}})
+      (with 'x (num 3) (add (id 'x) (num 2))))
+;; some of the extra tests we would have wanted
+(test (parse `{f x})
+      (app 'f (id 'x)))
+(test/exn (parse `{+ 1 2 3})
+          "expected add")
+
+;; ----------------------------------------------------------------------
+
+;; interp : F1WAE? (listof FunDef?) -> number?
+(define (interp an-f1wae fundefs)
+  (type-case F1WAE an-f1wae
+    [num (n) n]
+    [add (lhs rhs)
+         (+ (interp lhs fundefs) (interp rhs fundefs))]
+    [sub (lhs rhs)
+         (- (interp lhs fundefs) (interp rhs fundefs))]
+    [with (name named-expr body)
+          (interp (subst body
+                         name
+                         (interp named-expr fundefs))
+                  fundefs)]
+    [id (name)
+        (error 'interp "free identifier: ~a" name)]
+    [app (fun-name arg-expr)
+         (define the-fundef (lookup-fundef fun-name fundefs))
+         (define body (fundef-body the-fundef))
+         (define param-name (fundef-param-name the-fundef))
+         (define arg-value (interp arg-expr fundefs))
+         (interp (subst body
+                        param-name
+                        arg-value)
+                 ; THAT was the piece missing at the end of class
+                 ; need to pass in the function definitions whenever
+                 ; we recur!
+                 fundefs)]))
+
+;; lookup-fundef : symbol? (listof FunDef?) -> FunDef?
+(define (lookup-fundef name fundefs)
+  (cond [(empty? fundefs)
+         (error 'interp "undefined function: ~a" name)]
+        [(equal? (fundef-fun-name (first fundefs))
+                 name)
+         (first fundefs)]
+        [else
+         (lookup-fundef name (rest fundefs))]))
+
+;; subst : F1WAE? symbol? number? -> F1WAE?
+(define (subst a-f1wae name value)
+  (type-case F1WAE a-f1wae
+    [num (n)
+         a-f1wae]
+    [add (l r)
+         (add (subst l name value)
+              (subst r name value))]
+    [sub (l r)
+         (sub (subst l name value)
+              (subst r name value))]
+    [with (name2 named-expr body)
+          (with name2 (subst named-expr name value)
+                (if (equal? name name2)
+                    body
+                    (subst body name value)))]
+    [id (name2)
+        (if (equal? name name2)
+            (num value)
+            a-f1wae)]
+    [app (fun-name arg-expr)
+         (app fun-name (subst arg-expr name value))]))
+
+;; {deffun {f x}     {- 20 {twice {twice x}}}}
+;; {deffun {twice y} {+ y y}}
+;; {f 10}
+(test (interp
+       (parse `{f 10}) ; {f 10}, NOT {f x}. thanks Haris!
+       (list (fundef 'f 'x
+                     (parse `{- 20 {twice {twice x}}}))
+             (fundef 'twice 'y
+                     (parse `{+ y y}))))
+      -20)
+
+;; 5 -> 5
+(test (interp (parse `5) '())
+      5)
+;; {+ 1 2} -> 3
+(test (interp (parse `{+ 1 2}) '())
+      3)
+;; {- 3 4} -> -1
+(test (interp (parse `{- 3 4}) '())
+      -1)
+;; {+ {+ 1 2} {- 3 4}} -> 2
+(test (interp (parse `{+ {+ 1 2} {- 3 4}}) '())
+      2)
+
+#|
+{with {x {+ 1 2}}
+      {+ x x}}
+|#
+(test (interp (parse `{with {x {+ 1 2}}
+                            {+ x x}})
+              '())
+      6)
+#|
+x
+|#
+(test/exn (interp (parse `x) '())
+          "free identifier")
+#|
+{+ {with {x {+ 1 2}}
+         {+ x x}}
+   {with {x {- 4 3}}
+         {+ x x}}}
+|#
+(test (interp (parse `{+ {with {x {+ 1 2}}
+                               {+ x x}}
+                         {with {x {- 4 3}}
+                               {+ x x}}})
+              '())
+      8)
+#|
+{+ {with {x {+ 1 2}}
+         {+ x x}}
+   {with {y {- 4 3}}
+         {+ y y}}}
+|#
+(test (interp (parse `{+ {with {x {+ 1 2}}
+                               {+ x x}}
+                         {with {y {- 4 3}}
+                               {+ y y}}})
+              '())
+      8)
+#|
+{with {x {+ 1 2}}
+      {with {x {- 4 3}}
+            {+ x x}}}
+|#
+(test (interp (parse `{with {x {+ 1 2}}
+                            {with {x {- 4 3}}
+                                  {+ x x}}})
+              '())
+      2)
+#|
+{with {x {+ 1 2}}
+      {with {y {- 4 3}}
+            {+ x x}}}
+|#
+(test (interp (parse `{with {x {+ 1 2}}
+                            {with {y {- 4 3}}
+                                  {+ x x}}})
+              '())
+      6)
+
+
+#|
+substitute 10 for x in {+ 1 x}
+|#
+(test (subst (add (num 1) (id 'x))
+             'x
+             10)
+      (add (num 1) (num 10)))
+#|
+substitute 10 for x in y
+|#
+(test (subst (id 'y) 'x 10)
+      (id 'y))
+#|
+substitute 10 for x in {- 1 x}
+|#
+(test (subst (sub (num 1) (id 'x))
+             'x
+             10)
+      (sub (num 1) (num 10)))
+#|
+substitute 10 for x in {with {y 17} x}
+|#
+(test (subst (with 'y (num 17) (id 'x))
+             'x
+             10)
+      (with 'y (num 17) (num 10)))
+#|
+substitute 10 for x in {with {y x} y}
+|#
+(test (subst (with 'y (id 'x) (id 'y))
+             'x
+             10)
+      (with 'y (num 10) (id 'y)))
+#|
+substitute 10 for x in {with {x y} x}
+|#
+(test (subst (with 'x (id 'y) (id 'x))
+             'x
+             10)
+      (with 'x (id 'y) (id 'x)))
+
+
